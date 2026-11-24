@@ -24,6 +24,13 @@ public class GameAssets : MonoBehaviour
     public Material gorrunCape;
     public Material gorrunGlow;
 
+    [Header("Hero details")]
+    public Material kaelHair;
+    public Material ysraHair;
+    public Material gorrunHair;
+    public Material leather;
+    public Material gold;
+
     [Header("Weapons")]
     public Material blade;
     public Material spear;

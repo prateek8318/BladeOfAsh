@@ -56,6 +56,12 @@ public static class SceneBuilder
         a.gorrunCape = Mat("GorrunCape", new Color(0.2f, 0.12f, 0.06f), 0f, 0.1f);
         a.gorrunGlow = Mat("GorrunGlow", new Color(1f, 0.7f, 0.2f), 0f, 0.6f, new Color(3.2f, 1.6f, 0.2f));
 
+        a.kaelHair = Mat("KaelHair", new Color(0.07f, 0.05f, 0.045f), 0f, 0.3f);
+        a.ysraHair = Mat("YsraHair", new Color(0.78f, 0.8f, 0.86f), 0.1f, 0.55f);
+        a.gorrunHair = Mat("GorrunHair", new Color(0.38f, 0.14f, 0.05f), 0f, 0.25f);
+        a.leather = Mat("Leather", new Color(0.17f, 0.11f, 0.075f), 0f, 0.3f);
+        a.gold = Mat("Gold", new Color(0.78f, 0.56f, 0.24f), 0.9f, 0.7f);
+
         // Weapons
         a.blade = Mat("Blade", new Color(0.85f, 0.8f, 0.75f), 0.9f, 0.85f, new Color(0.9f, 0.3f, 0.05f));
         a.spear = Mat("Spear", new Color(0.6f, 0.85f, 1f), 0.6f, 0.8f, new Color(0.6f, 1.6f, 2.6f));

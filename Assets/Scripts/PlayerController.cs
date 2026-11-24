@@ -109,18 +109,20 @@ public class PlayerController : MonoBehaviour
             case UltimateKind.MoltenAegis: skin = A.gorrunSkin; armor = A.gorrunArmor; cape = A.gorrunCape; glow = A.gorrunGlow; break;
             default: skin = A.heroSkin; armor = A.heroArmor; cape = A.heroCape; glow = A.heroEmber; break;
         }
+        Material hairMat = Hero.ult == UltimateKind.Tempest ? A.ysraHair : Hero.ult == UltimateKind.MoltenAegis ? A.gorrunHair : A.kaelHair;
         rig = CharacterBuilder.Build(transform, new CharacterBuilder.Look
         {
-            skin = skin, armor = armor, cape = cape, eye = glow, glow = Hero.ult == UltimateKind.Rage ? null : glow,
-            scale = Hero.scale, helmet = Hero.helmet, horns = Hero.horns, bulky = Hero.bulky, ponytail = Hero.ponytail
+            hero = true, skin = skin, armor = armor, cape = cape, eye = glow, glow = glow,
+            hair = hairMat, leather = A.leather, trim = A.gold,
+            scale = Hero.scale, helmet = Hero.helmet, horns = Hero.horns, bulky = Hero.bulky,
+            longHair = Hero.ponytail, beard = Hero.beard, bareChest = Hero.bareChest, greatHelm = Hero.greatHelm
         });
-        CharacterBuilder.Part(rig, PrimitiveType.Cube, rig.armR, new Vector3(0, -0.3f, 0), new Vector3(0.215f, 0.05f, 0.215f) * (Hero.bulky ? 1.35f : 1f), glow, default, true);
-        CharacterBuilder.Part(rig, PrimitiveType.Cube, rig.armL, new Vector3(0, -0.3f, 0), new Vector3(0.215f, 0.05f, 0.215f) * (Hero.bulky ? 1.35f : 1f), glow, default, true);
         if (Hero.ult == UltimateKind.MoltenAegis)
         {
-            // molten core in the chest plate and a forge-plate on the back
-            CharacterBuilder.Part(rig, PrimitiveType.Cube, rig.torso, new Vector3(0, 0.45f, 0.28f), new Vector3(0.3f, 0.3f, 0.06f), glow, new Vector3(0, 0, 45), true);
-            CharacterBuilder.Part(rig, PrimitiveType.Cube, rig.torso, new Vector3(0, 0.5f, -0.33f), new Vector3(0.8f, 0.7f, 0.12f), armor);
+            // molten heart burning through the chest
+            CharacterBuilder.Part(rig, PrimitiveType.Sphere, rig.torso, new Vector3(0, 0.5f, 0.2f), new Vector3(0.2f, 0.2f, 0.06f), glow, default, true);
+            CharacterBuilder.Part(rig, PrimitiveType.Cube, rig.torso, new Vector3(0, 0.5f, 0.21f), new Vector3(0.36f, 0.04f, 0.03f), glow, new Vector3(0, 0, 30), true);
+            CharacterBuilder.Part(rig, PrimitiveType.Cube, rig.torso, new Vector3(0, 0.5f, 0.21f), new Vector3(0.36f, 0.04f, 0.03f), glow, new Vector3(0, 0, -30), true);
         }
 
         // Weapons (only the equipped one is visible)
@@ -347,6 +349,13 @@ public class PlayerController : MonoBehaviour
                 if (t != null) t.emitting = attacking && kv.Key == Weapon;
 
         if (spinning) rig.visual.localRotation = Quaternion.Euler(0, Time.time * 1080f, 0);
+
+        // secondary motion: cape and hair trail behind when moving
+        float flutter = Mathf.Sin(Time.time * (3f + moveAmount * 9f)) * (2f + moveAmount * 6f);
+        if (rig.cape != null)
+            rig.cape.localRotation = Quaternion.Slerp(rig.cape.localRotation, Quaternion.Euler(8f + moveAmount * 38f + (dodgeTimer > 0f ? 25f : 0f) + flutter, 0, flutter * 0.4f), dt * 8f);
+        if (rig.hairTail != null)
+            rig.hairTail.localRotation = Quaternion.Slerp(rig.hairTail.localRotation, Quaternion.Euler(-15f + moveAmount * 45f + flutter * 1.5f, 0, flutter), dt * 10f);
     }
 
     // ---------------------------------------------------------------- Attacks

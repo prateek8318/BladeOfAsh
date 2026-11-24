@@ -33,7 +33,7 @@ public class AutoTest : MonoBehaviour
         t += Time.unscaledDeltaTime;
         var p = PlayerController.I;
         var cam = FindAnyObjectByType<ThirdPersonCamera>();
-        if (p != null && cam != null && !p.health.IsDead)
+        if (p != null && cam != null && !p.health.IsDead && GameManager.I != null && GameManager.I.InputEnabled)
         {
             Enemy nearest = null; float best = float.MaxValue;
             foreach (var e in Enemy.All)

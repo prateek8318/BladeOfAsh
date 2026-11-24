@@ -2,6 +2,9 @@ using UnityEngine;
 
 public class HealthOrb : MonoBehaviour
 {
+    public static readonly System.Collections.Generic.List<HealthOrb> All = new System.Collections.Generic.List<HealthOrb>();
+    void OnEnable() { All.Add(this); }
+    void OnDisable() { All.Remove(this); }
     float t;
     Vector3 basePos;
 

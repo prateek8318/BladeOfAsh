@@ -11,7 +11,7 @@ public class HeroDef
     public UltimateKind ult;
     public Color accent;
     public float scale;
-    public bool horns, helmet, bulky, ponytail;
+    public bool horns, helmet, bulky, ponytail, beard, bareChest, greatHelm;
 
     public static readonly HeroDef[] All =
     {
@@ -20,21 +20,21 @@ public class HeroDef
             name = "KAEL", title = "Kael the Ashborn", ultName = "RAGE",
             blurb = "Last sworn blade of the burnt kingdom.\nBalanced fighter. RAGE: +80% damage, half damage taken, lifesteal.",
             maxHealth = 200, runSpeed = 6.5f, sprintSpeed = 10f, dodgeCooldown = 0.15f, damageMul = 1f, attackSpeed = 1f, damageTaken = 1f,
-            ult = UltimateKind.Rage, accent = new Color(1f, 0.5f, 0.15f), scale = 1.05f, horns = true, helmet = true,
+            ult = UltimateKind.Rage, accent = new Color(1f, 0.5f, 0.15f), scale = 1.2f, horns = true, helmet = true, beard = true,
         },
         new HeroDef
         {
             name = "YSRA", title = "Ysra Stormveil", ultName = "TEMPEST",
             blurb = "Exiled storm-warden who stole the sky's voice.\nFast and fragile. TEMPEST: lightning hunts every foe nearby.",
             maxHealth = 160, runSpeed = 7.6f, sprintSpeed = 11.5f, dodgeCooldown = 0.02f, damageMul = 0.95f, attackSpeed = 1.22f, damageTaken = 1f,
-            ult = UltimateKind.Tempest, accent = new Color(0.45f, 0.85f, 1f), scale = 0.98f, ponytail = true,
+            ult = UltimateKind.Tempest, accent = new Color(0.45f, 0.85f, 1f), scale = 1.12f, ponytail = true,
         },
         new HeroDef
         {
             name = "GORRUN", title = "Gorrun Cinderwall", ultName = "MOLTEN AEGIS",
             blurb = "Forge-giant who carried a mountain's heart out of the fire.\nSlow tank. MOLTEN AEGIS: immovable, burning aura, 75% less damage.",
             maxHealth = 300, runSpeed = 5.6f, sprintSpeed = 8.6f, dodgeCooldown = 0.35f, damageMul = 1.2f, attackSpeed = 0.88f, damageTaken = 0.85f,
-            ult = UltimateKind.MoltenAegis, accent = new Color(1f, 0.75f, 0.2f), scale = 1.22f, horns = true, helmet = true, bulky = true,
+            ult = UltimateKind.MoltenAegis, accent = new Color(1f, 0.75f, 0.2f), scale = 1.34f, horns = true, helmet = true, bulky = true, beard = true, bareChest = true, greatHelm = true,
         },
     };
 }
