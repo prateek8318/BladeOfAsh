@@ -5,6 +5,7 @@ using UnityEngine;
 public class Rig
 {
     public Transform visual, torso, head, armL, armR, handL, handR, legL, legR;
+    public Transform cape, hairTail; // optional cloth / hair pivots for secondary motion
     public float scale = 1f;
     public List<Renderer> renderers = new List<Renderer>();
     public List<Renderer> glowRenderers = new List<Renderer>();
@@ -43,10 +44,14 @@ public static class CharacterBuilder
         public float scale;
         public bool horns, helmet, bulky, ponytail, hood;
         public Material glow;
+        // Detailed hero body (used by the playable heroes)
+        public bool hero, beard, bareChest, longHair, greatHelm;
+        public Material hair, leather, trim;
     }
 
     public static Rig Build(Transform root, Look look)
     {
+        if (look.hero) return BuildHero(root, look);
         var rig = new Rig { scale = look.scale };
         rig.visual = Pivot("Visual", root, Vector3.zero);
         rig.visual.localScale = Vector3.one * look.scale;

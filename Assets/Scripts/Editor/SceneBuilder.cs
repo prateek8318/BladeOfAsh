@@ -141,11 +141,28 @@ public static class SceneBuilder
         var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
         {
             scenes = new[] { ScenePath },
-            locationPathName = "Builds/BladeOfAsh.app",
+            locationPathName = "Builds/macOS/BladeOfAsh.app",
             target = BuildTarget.StandaloneOSX,
             options = BuildOptions.None
         });
         Debug.Log("[BladeOfAsh] Build result: " + report.summary.result + " size=" + report.summary.totalSize);
+        if (Application.isBatchMode && report.summary.result != UnityEditor.Build.Reporting.BuildResult.Succeeded)
+            EditorApplication.Exit(1);
+    }
+
+    [MenuItem("Blade of Ash/Build Windows App")]
+    public static void BuildWindows()
+    {
+        Build();
+        Directory.CreateDirectory("Builds/Windows");
+        var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+        {
+            scenes = new[] { ScenePath },
+            locationPathName = "Builds/Windows/BladeOfAsh.exe",
+            target = BuildTarget.StandaloneWindows64,
+            options = BuildOptions.None
+        });
+        Debug.Log("[BladeOfAsh] Windows build result: " + report.summary.result + " size=" + report.summary.totalSize);
         if (Application.isBatchMode && report.summary.result != UnityEditor.Build.Reporting.BuildResult.Succeeded)
             EditorApplication.Exit(1);
     }
