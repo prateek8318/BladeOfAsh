@@ -31,6 +31,10 @@ public class GameAssets : MonoBehaviour
     public Material leather;
     public Material gold;
 
+    [Header("Optional realistic hero models (Assets/Models/<Hero>/)")]
+    public GameObject[] heroModels = new GameObject[3];
+    public RuntimeAnimatorController[] heroControllers = new RuntimeAnimatorController[3];
+
     [Header("Weapons")]
     public Material blade;
     public Material spear;
@@ -70,6 +74,7 @@ public class GameAssets : MonoBehaviour
     public Material stone, darkStone, arenaFloor, ashGround, rune, fire, iron;
     public Material snow, ice, frostStone, crystal, pineLeaf, bark;
     public Material obsidian, stormStone, stormRune, cloud;
+    public Material sky;
 
     void Awake() { I = this; }
 }

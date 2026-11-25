@@ -34,6 +34,13 @@ public class PlayerController : MonoBehaviour
     public bool Chilled => chillTimer > 0f;
     public float OutgoingMul => Hero.damageMul * (RageActive ? 1.8f : (UltActive && Hero.ult == UltimateKind.Tempest ? 1.25f : 1f));
 
+    // Counters the training tutorial watches
+    [System.NonSerialized] public int statDodges, statBlocks, statParries, statLight, statHeavies, statThrows, statCatches, statSwitches, statExecutions, statUlts;
+    [System.NonSerialized] public float statSprint;
+    public bool Executing => executing;
+    bool executing;
+    HeroModel model;
+
     CharacterController cc;
     ThirdPersonCamera cam;
     Rig rig;
@@ -100,6 +107,7 @@ public class PlayerController : MonoBehaviour
         Hero = HeroDef.All[Mathf.Clamp(index, 0, HeroDef.All.Length - 1)];
         var A = GameAssets.I;
         if (rig != null && rig.visual != null) { rig.visual.name = "OldVisual"; Destroy(rig.visual.gameObject); }
+        if (model != null) { Destroy(model.gameObject); model = null; }
         trails.Clear();
 
         Material skin, armor, cape, glow;
@@ -124,6 +132,8 @@ public class PlayerController : MonoBehaviour
             CharacterBuilder.Part(rig, PrimitiveType.Cube, rig.torso, new Vector3(0, 0.5f, 0.21f), new Vector3(0.36f, 0.04f, 0.03f), glow, new Vector3(0, 0, 30), true);
             CharacterBuilder.Part(rig, PrimitiveType.Cube, rig.torso, new Vector3(0, 0.5f, 0.21f), new Vector3(0.36f, 0.04f, 0.03f), glow, new Vector3(0, 0, -30), true);
         }
+
+        model = HeroModel.TryAttach(this, index, rig, Hero.scale);
 
         // Weapons (only the equipped one is visible)
         swordGO = CharacterBuilder.GreatSword(rig, A.heroArmor, A.blade, 1.55f);
@@ -169,6 +179,7 @@ public class PlayerController : MonoBehaviour
         lightStep = 0;
         if (flourish)
         {
+            statSwitches++;
             var mat = Weapon == WeaponKind.Thunderjaw ? GameAssets.I.lightning : Weapon == WeaponKind.Emberfangs ? GameAssets.I.fang : GameAssets.I.blade;
             FX.Shards(rig.handR.position, mat, 10, 3f, 0.07f);
             SFX.Play(SFX.S.Throw, 0.5f, 1.4f);
@@ -225,6 +236,7 @@ public class PlayerController : MonoBehaviour
                 else if (thrown != null) thrown.Recall(this);
             }
             if (Input.GetKeyDown(KeyCode.R) && rage >= maxRage && !UltActive) StartCoroutine(Ultimate());
+            if ((Input.GetKeyDown(KeyCode.V) || Input.GetMouseButtonDown(2)) && !attacking) TryExecute();
             if (!attacking)
             {
                 if (Input.GetKeyDown(KeyCode.Alpha1) && Weapon != WeaponKind.Ashbrand) SetWeapon(0, true);
@@ -257,7 +269,9 @@ public class PlayerController : MonoBehaviour
         }
         else
         {
-            float speed = Input.GetKey(KeyCode.LeftShift) ? sprintSpeed : runSpeed;
+            bool sprinting = Input.GetKey(KeyCode.LeftShift) && moveDir.sqrMagnitude > 0.1f;
+            if (sprinting) statSprint += dt;
+            float speed = sprinting ? sprintSpeed : runSpeed;
             if (UltActive) speed *= Hero.ult == UltimateKind.Tempest ? 1.3f : 1.15f;
             if (Chilled) speed *= 0.6f;
             if (attacking && !spinning) speed *= 0.2f;
@@ -292,6 +306,8 @@ public class PlayerController : MonoBehaviour
         rig.visual.localRotation = Quaternion.identity;
         SFX.Play(SFX.S.Swing, 0.4f, 0.7f);
         IdlePose();
+        statDodges++;
+        Anim("Dodge");
     }
 
     void ApplyGravityOnly()
@@ -338,9 +354,14 @@ public class PlayerController : MonoBehaviour
         }
         float k = 1f - Mathf.Exp(-poseSpeed * dt);
         rig.armR.localRotation = Quaternion.Slerp(rig.armR.localRotation, armR, k);
-        rig.handR.localRotation = Quaternion.Slerp(rig.handR.localRotation, handRT, k);
+        if (model == null) rig.handR.localRotation = Quaternion.Slerp(rig.handR.localRotation, handRT, k);
         rig.armL.localRotation = Quaternion.Slerp(rig.armL.localRotation, armL, k);
-        rig.handL.localRotation = Quaternion.Slerp(rig.handL.localRotation, handLT, k);
+        if (model == null) rig.handL.localRotation = Quaternion.Slerp(rig.handL.localRotation, handLT, k);
+        if (model != null)
+        {
+            model.SetLocomotion(moveAmount, blocking);
+            if (!attacking && dodgeTimer <= 0f && !blocking && !dead && !executing) model.BackToLocomotionIfIdle();
+        }
         var breathe = Quaternion.Euler(Mathf.Sin(Time.time * 2f) * 1.5f + moveAmount * 12f, 0, 0);
         rig.torso.localRotation = Quaternion.Slerp(rig.torso.localRotation, torsoT * breathe, k);
 
@@ -366,6 +387,8 @@ public class PlayerController : MonoBehaviour
     IEnumerator LightAttack()
     {
         attacking = true;
+        statLight++;
+        Anim("Attack" + (lightStep % 3 + 1));
         switch (Weapon)
         {
             case WeaponKind.Emberfangs: yield return FangCombo(); break;
@@ -499,12 +522,15 @@ public class PlayerController : MonoBehaviour
             case 2: if (spearInHand) StartCoroutine(ThrowSpear()); else if (thrown != null) thrown.Recall(this); break;
             case 3: if (rage >= maxRage && !UltActive) StartCoroutine(Ultimate()); break;
             case 4: SetWeapon(((int)Weapon + 1) % 3, true); break;
+            case 5: TryExecute(); break;
         }
     }
 
     IEnumerator Heavy()
     {
         attacking = true;
+        statHeavies++;
+        Anim(Weapon == WeaponKind.Emberfangs ? "Spin" : "Heavy");
         switch (Weapon)
         {
             case WeaponKind.Emberfangs: yield return Cyclone(); break;
@@ -616,6 +642,8 @@ public class PlayerController : MonoBehaviour
     IEnumerator ThrowSpear()
     {
         attacking = true;
+        statThrows++;
+        Anim("Throw");
         SetPose(new Vector3(10, 0, 10), new Vector3(35, 0, 0), new Vector3(-165, 0, -15), new Vector3(-5, -25, 0), 20f, Vector3.zero);
         yield return new WaitForSeconds(0.16f);
         SetPose(new Vector3(10, 0, 10), new Vector3(35, 0, 0), new Vector3(-75, 0, 0), new Vector3(10, 20, 0), 40f, Vector3.zero);
@@ -653,6 +681,7 @@ public class PlayerController : MonoBehaviour
 
     public void CatchSpear()
     {
+        statCatches++;
         spearInHand = true;
         thrown = null;
         spearVisual.gameObject.SetActive(Weapon != WeaponKind.Emberfangs);
@@ -661,10 +690,103 @@ public class PlayerController : MonoBehaviour
         SFX.Play(SFX.S.Parry, 0.35f, 1.6f);
     }
 
+    // ---------------------------------------------------------------- Execution finisher
+    public Enemy ExecutableTarget()
+    {
+        Enemy best = null; float bd = float.MaxValue;
+        foreach (var e in Enemy.All)
+        {
+            if (e == null || !e.IsStunned) continue;
+            float d = Vector3.Distance(e.transform.position, transform.position) - e.Scale * 0.6f;
+            if (d < 3.6f && d < bd) { bd = d; best = e; }
+        }
+        return best;
+    }
+
+    void Anim(string state) { if (model != null) model.Play(state); }
+
+    void TryExecute()
+    {
+        var e = ExecutableTarget();
+        if (e == null || executing) return;
+        StartCoroutine(Execute(e));
+    }
+
+    IEnumerator Execute(Enemy e)
+    {
+        if (!e.BeginExecuted()) yield break;
+        executing = true; attacking = true;
+        health.invulnerable = true;
+        statExecutions++;
+        Anim("Execute");
+        var to = e.transform.position - transform.position; to.y = 0;
+        if (to.sqrMagnitude > 0.01f) transform.rotation = Quaternion.LookRotation(to);
+        e.transform.rotation = Quaternion.LookRotation(-to.normalized);
+        // close the distance
+        Vector3 target = e.transform.position - to.normalized * (1.3f + e.Scale * 0.55f);
+        GameManager.I?.CineExecution(this, e);
+        FX.SlowMo(1.9f, 0.4f);
+        SFX.Play(SFX.S.Roar, 0.5f, 1.3f);
+        float t = 0f;
+        Vector3 from = transform.position;
+        while (t < 1f)
+        {
+            t += Time.deltaTime / 0.18f;
+            var p = Vector3.Lerp(from, target, Mathf.SmoothStep(0, 1, t)); p.y = transform.position.y;
+            cc.enabled = false; transform.position = p; cc.enabled = true;
+            yield return null;
+        }
+        // 1) brutal rising cut
+        SetPose(new Vector3(-170, 30, 0), new Vector3(0, 0, 0), new Vector3(-150, 0, -20), new Vector3(-15, 20, 0), 20f);
+        yield return new WaitForSeconds(0.2f);
+        SetPose(new Vector3(-30, -70, 0), new Vector3(90, 0, 0), new Vector3(20, 0, -20), new Vector3(10, -40, 0), 45f);
+        SetTrails(true);
+        yield return new WaitForSeconds(0.05f);
+        var mid = e.transform.position + Vector3.up * e.Scale * 1.3f;
+        FX.Shards(mid, GameAssets.I.shard, 18, 7f, 0.12f);
+        FX.HitStop(0.1f); FX.Shake(0.7f);
+        SFX.Play(SFX.S.HeavyHit, 1f, 0.9f);
+        e.health.TakeDamage(new DamageInfo { amount = e.type == EnemyType.Boss ? 30f : 15f, source = transform.position, knockback = 0f, heavy = true, fromPlayer = true });
+        yield return new WaitForSeconds(0.25f);
+        // 2) overhead execution slam
+        SetPose(new Vector3(-180, 0, 0), new Vector3(0, 0, 0), new Vector3(-175, 0, 0), new Vector3(-20, 0, 0), 18f);
+        yield return new WaitForSeconds(0.28f);
+        SetPose(new Vector3(-15, 0, 0), new Vector3(70, 0, 0), new Vector3(-25, 0, 0), new Vector3(35, 0, 0), 55f);
+        yield return new WaitForSeconds(0.06f);
+        var A = GameAssets.I;
+        var mat = Weapon == WeaponKind.Thunderjaw ? A.lightning : Weapon == WeaponKind.Emberfangs ? A.fang : A.shockwave;
+        FX.Ring(e.transform.position, mat, 4.5f, 0.45f);
+        FX.Shards(mid, A.shard, 34, 11f, 0.16f);
+        FX.Shards(mid, mat, 14, 8f, 0.1f);
+        if (Weapon == WeaponKind.Thunderjaw) LightningBolt.Create(e.transform.position + Vector3.up * 25f, e.transform.position, A.lightning, 0.5f, 0.35f);
+        FX.HitStop(0.2f); FX.Shake(1.4f);
+        SFX.Play(SFX.S.Boom, 1f, 0.9f);
+        SFX.Play(SFX.S.HeavyHit, 1f, 0.7f);
+        float dmg = e.type == EnemyType.Boss ? e.health.maxHealth * 0.18f : 9999f;
+        e.EndExecuted(dmg, transform.position);
+        RegisterHit(dmg); RegisterHit(dmg); RegisterHit(dmg);
+        AddRage(25f);
+        health.Heal(15f);
+        GameManager.I?.ShowMessage(e.type == EnemyType.Boss ? "BRUTAL!" : "EXECUTED", 1f);
+        yield return new WaitForSeconds(0.35f);
+        SetTrails(false);
+        health.invulnerable = false;
+        executing = false; attacking = false;
+        IdlePose();
+    }
+
+    void SetTrails(bool on)
+    {
+        if (trails.TryGetValue(Weapon, out var list)) foreach (var t in list) if (t != null) t.emitting = on;
+    }
+
     // ---------------------------------------------------------------- Ultimates
     IEnumerator Ultimate()
     {
         attacking = true;
+        statUlts++;
+        Anim("Ult");
+        GameManager.I?.CineUltimate(this);
         rageTimer = Hero.ult == UltimateKind.Rage ? rageDuration : 10f;
         ultTick = 0.6f;
         SetPose(new Vector3(-150, 0, 40), new Vector3(0, 0, 0), new Vector3(-150, 0, -40), new Vector3(-20, 0, 0), 15f, Vector3.zero);
@@ -823,11 +945,13 @@ public class PlayerController : MonoBehaviour
                 SFX.Play(SFX.S.Parry, 1f);
                 AddRage(15f);
                 if (attacker != null) GameManager.I?.ShowMessage("PARRY!", 0.8f);
+                statParries++; statBlocks++;
                 return HitResult.Parried;
             }
             damage *= 0.2f;
             knockback *= 0.4f;
             AddRage(3f);
+            statBlocks++;
             FX.Shards(transform.position + transform.forward + Vector3.up * 1.4f, GameAssets.I.blade, 5, 4f, 0.06f);
             SFX.Play(SFX.S.Parry, 0.45f, 0.7f);
             health.TakeDamage(new DamageInfo { amount = damage, source = source, knockback = knockback });
@@ -850,6 +974,7 @@ public class PlayerController : MonoBehaviour
             StopAllCoroutines();
             attacking = false; attackMoveForward = 0f;
             SetPose(new Vector3(30, 0, 30), new Vector3(35, 0, 0), new Vector3(30, 0, -30), new Vector3(-20, 0, 0), 30f);
+            Anim("Hit");
         }
     }
 
@@ -860,6 +985,7 @@ public class PlayerController : MonoBehaviour
         spinning = false;
         foreach (var kv in trails) foreach (var t in kv.Value) if (t != null) t.emitting = false;
         StartCoroutine(DeathFall());
+        Anim("Death");
         GameManager.I?.OnPlayerDied();
     }
 

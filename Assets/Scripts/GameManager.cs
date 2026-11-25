@@ -15,7 +15,7 @@ public class GameManager : MonoBehaviour
     static int carriedScore, carriedKills;
     static float carriedTime;
 
-    enum Phase { MainMenu, Select, Story, Countdown, Fighting, Victory, GameOver }
+    enum Phase { MainMenu, Select, Story, Tutorial, Countdown, Fighting, Victory, GameOver }
     Phase phase = Phase.MainMenu;
     bool paused;
 
@@ -32,7 +32,7 @@ public class GameManager : MonoBehaviour
     float weaponMsgTimer;
     string weaponMsg;
     float countdown;
-    float helpTimer = 10f;
+    float helpTimer = 0f;
     Enemy boss;
     float runTime;
     readonly Queue<EnemyType> pending = new Queue<EnemyType>();
@@ -62,7 +62,24 @@ public class GameManager : MonoBehaviour
     GUIStyle big, mid, small, center, tiny, cardTitle, menuItem, storyBody, storyHead;
     Texture2D worldMap, disc, ring, arrow, gradL, gradV;
 
-    public bool InputEnabled => !paused && (phase == Phase.Fighting || phase == Phase.Countdown);
+    public bool InputEnabled => !paused && !cineActive && (phase == Phase.Fighting || phase == Phase.Countdown || phase == Phase.Tutorial);
+    public bool CineActive => cineActive;
+
+    // ---- Cinematics
+    bool cineActive, cineSkippable, cineLetterbox;
+    string cineTitle, cineSub;
+    float cineT, cineDur;
+    Coroutine cineCo;
+    float deathT;
+
+    // ---- Tutorial
+    static bool tutorialThenStory;
+    int tutStep;
+    float tutDoneT = -1f, tutCompleteT = -1f;
+    float tutMoved, tutLooked; Vector3 tutLastPos; float tutLastYaw;
+    int[] tutBase = new int[10];
+    Enemy dummy;
+    float dummyRespawn = -1f;
     public bool IsTitle => phase == Phase.MainMenu || phase == Phase.Select || phase == Phase.Story;
     public bool IsMainMenu => phase == Phase.MainMenu;
     // Camera framing for the hero showcase: on the main menu the hero stands to the right of the menu.
@@ -131,6 +148,8 @@ public class GameManager : MonoBehaviour
             case "controls": page = Page.Controls; break;
             case "pause": BeginRun(); SetPaused(true); break;
             case "hud": BeginRun(); break;
+            case "tutorial": StartTutorial(false); break;
+            case "tutorial5": StartTutorial(false); for (int k = 0; k < 9; k++) NextTutStep(); break;
         }
         if (pages != null) pageIndex = Mathf.Clamp(pg, 0, Mathf.Max(0, pages.Length - 1));
         pageTime = 30f;
@@ -143,7 +162,8 @@ public class GameManager : MonoBehaviour
         NextWave();
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible = false;
-        ShowMessage(Map.name, 2.4f);
+        if (!AutoTest.Enabled || System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-cine") >= 0) CineRealmIntro();
+        else ShowMessage(Map.name, 2.4f);
     }
 
     void StartStory(StoryPage[] p, System.Action done)
@@ -182,6 +202,12 @@ public class GameManager : MonoBehaviour
         UpdateMusic();
 
         if (paused) { UpdatePause(); return; }
+        if (cineActive)
+        {
+            cineT += Time.unscaledDeltaTime;
+            if (cineSkippable && cineT > 0.4f && (Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.Escape))) EndCine();
+            if (phase != Phase.GameOver) return;
+        }
 
         bool up = Input.GetKeyDown(KeyCode.UpArrow) || Input.GetKeyDown(KeyCode.W);
         bool down = Input.GetKeyDown(KeyCode.DownArrow) || Input.GetKeyDown(KeyCode.S);
@@ -216,6 +242,10 @@ public class GameManager : MonoBehaviour
                 else if (ok || Input.GetMouseButtonDown(0)) AdvanceStory(false);
                 else if (back) AdvanceStory(true);
                 break;
+            case Phase.Tutorial:
+                if (back) { SetPaused(true); break; }
+                UpdateTutorial();
+                break;
             case Phase.Countdown:
                 if (back) { SetPaused(true); break; }
                 runTime += Time.deltaTime;
@@ -235,7 +265,7 @@ public class GameManager : MonoBehaviour
                 if (pending.Count > 0 && spawnTimer <= 0f && Enemy.All.Count < cap)
                 {
                     var e = Spawn(pending.Dequeue(), RandomSpawnPoint());
-                    if (e.type == EnemyType.Boss) boss = e;
+                    if (e.type == EnemyType.Boss) { boss = e; CineBossIntro(e); }
                     spawnTimer = 0.55f;
                 }
                 if (pending.Count == 0 && Enemy.All.Count == 0)
@@ -260,6 +290,8 @@ public class GameManager : MonoBehaviour
                 if (Input.GetKeyDown(KeyCode.M)) BackToMenu();
                 break;
             case Phase.GameOver:
+                deathT += Time.unscaledDeltaTime;
+                if (deathT < 2.5f) break;
                 if (Input.GetKeyDown(KeyCode.Return)) Retry();
                 if (Input.GetKeyDown(KeyCode.M)) BackToMenu();
                 break;
@@ -271,7 +303,7 @@ public class GameManager : MonoBehaviour
     {
         var l = new List<string>();
         if (SavedChapter > 0 && SavedChapter < MapDef.All.Length) l.Add("CONTINUE STORY");
-        l.Add("NEW STORY"); l.Add("FREE BATTLE"); l.Add("WORLD MAP"); l.Add("CONTROLS"); l.Add("CREDITS"); l.Add("QUIT");
+        l.Add("NEW STORY"); l.Add("TRAINING"); l.Add("FREE BATTLE"); l.Add("WORLD MAP"); l.Add("CONTROLS"); l.Add("CREDITS"); l.Add("QUIT");
         return l.ToArray();
     }
 
@@ -289,6 +321,7 @@ public class GameManager : MonoBehaviour
                 break;
             case "NEW STORY": storyMode = true; PickMap(0); phase = Phase.Select; break;
             case "FREE BATTLE": storyMode = false; phase = Phase.Select; break;
+            case "TRAINING": storyMode = false; StartTutorial(false); break;
             case "WORLD MAP": page = Page.WorldMap; break;
             case "CONTROLS": page = Page.Controls; break;
             case "CREDITS": page = Page.Credits; break;
@@ -301,8 +334,7 @@ public class GameManager : MonoBehaviour
         SFX.Play(SFX.S.Boom, 0.5f, 1.1f);
         if (storyMode)
         {
-            var list = new List<StoryPage>(Story.Prologue(SelectedHero)) { Story.ChapterIntro(0) };
-            StartStory(list.ToArray(), BeginRun);
+            StartStory(Story.Prologue(SelectedHero), () => StartTutorial(true));
         }
         else BeginRun();
     }
@@ -386,6 +418,7 @@ public class GameManager : MonoBehaviour
         Music.Track t; float pitch = 1f;
         switch (phase)
         {
+            case Phase.Tutorial: t = Music.Track.Battle; pitch = 0.92f; break;
             case Phase.Countdown:
             case Phase.Fighting:
                 bool bossWave = waveIndex >= Waves.Length - 1 && (phase == Phase.Fighting || countdown < 2f);
@@ -469,6 +502,7 @@ public class GameManager : MonoBehaviour
 
     public void OnEnemyKilled(Enemy e)
     {
+        if (e.trainingDummy) { dummyRespawn = 1.5f; return; }
         kills++;
         int baseScore = e.type switch
         {
@@ -478,7 +512,7 @@ public class GameManager : MonoBehaviour
         score += Mathf.RoundToInt(baseScore * (1f + combo * 0.1f));
         if (e == boss)
         {
-            ShowMessage(BossDefs.Fallen[e.bossKind], 3f);
+            CineBossDeath(e);
             pending.Clear();
             foreach (var other in Enemy.All.ToArray())
                 other.health.TakeDamage(new DamageInfo { amount = 9999, source = e.transform.position, knockback = 10, fromPlayer = true });
@@ -488,6 +522,8 @@ public class GameManager : MonoBehaviour
     public void OnPlayerDied()
     {
         phase = Phase.GameOver;
+        deathT = 0f;
+        CinePlayerDeath();
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
     }
@@ -502,6 +538,374 @@ public class GameManager : MonoBehaviour
     {
         weaponMsg = text;
         weaponMsgTimer = 1.2f;
+    }
+
+    // ================================================================ Cinematics
+    // Camera paths are functions of normalised time k (0..1). Unscaled time so slow-mo shots still play.
+    delegate void CinePath(float k, out Vector3 pos, out Vector3 look);
+
+    void RunCine(float dur, CinePath path, string title, string sub, bool skippable, bool letterbox, float fov = 50f, float smooth = 6f, bool cut = true, System.Action done = null)
+    {
+        if (cineCo != null) StopCoroutine(cineCo);
+        cineCo = StartCoroutine(CineRoutine(dur, path, title, sub, skippable, letterbox, fov, smooth, cut, done));
+    }
+
+    System.Action cineDone;
+
+    System.Collections.IEnumerator CineRoutine(float dur, CinePath path, string title, string sub, bool skippable, bool letterbox, float fov, float smooth, bool cut, System.Action done)
+    {
+        cineActive = true; cineSkippable = skippable; cineLetterbox = letterbox;
+        cineTitle = title; cineSub = sub; cineT = 0f; cineDur = dur; cineDone = done;
+        ThirdPersonCamera.cineActive = true;
+        ThirdPersonCamera.cineFov = fov;
+        ThirdPersonCamera.cineSmooth = smooth;
+        path(0f, out var p0, out var l0);
+        ThirdPersonCamera.cinePos = p0; ThirdPersonCamera.cineLook = l0;
+        ThirdPersonCamera.cineCut = cut;
+        while (cineT < dur)
+        {
+            path(Mathf.Clamp01(cineT / dur), out var p, out var l);
+            ThirdPersonCamera.cinePos = p; ThirdPersonCamera.cineLook = l;
+            yield return null;
+        }
+        EndCine();
+    }
+
+    void EndCine()
+    {
+        if (cineCo != null) { StopCoroutine(cineCo); cineCo = null; }
+        cineActive = false;
+        ThirdPersonCamera.cineActive = false;
+        var d = cineDone; cineDone = null;
+        d?.Invoke();
+    }
+
+    static float Ease(float k) => k * k * (3f - 2f * k);
+
+    void CineRealmIntro()
+    {
+        var p = PlayerController.I; if (p == null) return;
+        Vector3 hero = p.transform.position;
+        float behind = (p.transform.eulerAngles.y + 180f) * Mathf.Deg2Rad;
+        float start = behind + 2.4f;
+        string title = Map.name;
+        string sub = storyMode ? $"CHAPTER {new[] { "I", "II", "III" }[SelectedMap]}  ·  {Map.subtitle}" : Map.subtitle;
+        RunCine(6.5f, (float k, out Vector3 pos, out Vector3 look) =>
+        {
+            float e = Ease(k);
+            float a = Mathf.Lerp(start, behind, e);
+            float r = Mathf.Lerp(30f, 5.5f, e);
+            float y = Mathf.Lerp(16f, 2.6f, Ease(Mathf.Clamp01(k * 1.15f)));
+            var center = Vector3.Lerp(Vector3.zero, hero, e);
+            pos = center + new Vector3(Mathf.Sin(a), 0, Mathf.Cos(a)) * r + Vector3.up * y;
+            look = Vector3.Lerp(Vector3.up * 3f, hero + Vector3.up * 1.7f, Ease(Mathf.Clamp01(k * 1.3f)));
+        }, title, sub, true, true, 55f, 5f, true, () => ShowMessage("SURVIVE", 1.4f));
+        SFX.Play(SFX.S.Boom, 0.6f, 0.6f);
+    }
+
+    void CineBossIntro(Enemy b)
+    {
+        string[] parts = b.displayName.Split(',');
+        Vector3 bp = b.transform.position;
+        Vector3 fwd = b.transform.forward; fwd.y = 0; fwd.Normalize();
+        Vector3 side = Vector3.Cross(Vector3.up, fwd);
+        float s = b.Scale;
+        RunCine(5f, (float k, out Vector3 pos, out Vector3 look) =>
+        {
+            float e = Ease(k);
+            pos = bp + fwd * Mathf.Lerp(5.5f * s, 3.2f * s, e) + side * Mathf.Lerp(-1.2f, 0.8f, e) * s + Vector3.up * Mathf.Lerp(0.4f, 1.0f, e) * s;
+            look = bp + Vector3.up * Mathf.Lerp(1.4f, 2.0f, e) * s;
+        }, parts[0].Trim(), parts.Length > 1 ? parts[1].Trim().ToUpper() : "", true, true, 42f, 4f, true);
+        StartCoroutine(BossRoar(b));
+    }
+
+    System.Collections.IEnumerator BossRoar(Enemy b)
+    {
+        yield return new WaitForSecondsRealtime(1.6f);
+        if (b == null) yield break;
+        SFX.Play(SFX.S.Roar, 1f, 0.75f);
+        FX.Shake(1.2f);
+        var mat = b.bossKind == 1 ? GameAssets.I.frostGlow : b.bossKind == 2 ? GameAssets.I.stormGlow : GameAssets.I.bossGlow;
+        FX.Ring(b.transform.position, mat, 8f, 0.8f);
+    }
+
+    void CineBossDeath(Enemy b)
+    {
+        Vector3 bp = b.transform.position; float s = b.Scale;
+        float a0 = Random.Range(0f, Mathf.PI * 2f);
+        RunCine(3.6f, (float k, out Vector3 pos, out Vector3 look) =>
+        {
+            float a = a0 + k * 1.6f;
+            pos = bp + new Vector3(Mathf.Sin(a), 0, Mathf.Cos(a)) * (4.5f * s) + Vector3.up * (1.8f + k) * s;
+            look = bp + Vector3.up * 1.2f * s;
+        }, BossDefs.Fallen[b.bossKind], "", false, true, 45f, 5f, true);
+    }
+
+    public void CineExecution(PlayerController p, Enemy e)
+    {
+        Vector3 mid = (p.transform.position + e.transform.position) * 0.5f;
+        Vector3 dir = e.transform.position - p.transform.position; dir.y = 0; dir.Normalize();
+        Vector3 side = Vector3.Cross(Vector3.up, dir) * (Random.value < 0.5f ? -1f : 1f);
+        float s = Mathf.Max(1f, e.Scale);
+        RunCine(1.75f, (float k, out Vector3 pos, out Vector3 look) =>
+        {
+            pos = mid + side * (3.4f + k * 0.8f) * s - dir * (1.2f - k) + Vector3.up * (1.1f + k * 0.5f) * s;
+            look = mid + Vector3.up * 1.3f * s;
+        }, null, null, false, true, 45f, 9f, true);
+    }
+
+    public void CineUltimate(PlayerController p)
+    {
+        Vector3 hp = p.transform.position; Vector3 f = p.transform.forward;
+        Vector3 r = p.transform.right;
+        RunCine(1.1f, (float k, out Vector3 pos, out Vector3 look) =>
+        {
+            pos = hp + r * (2.6f - k * 0.6f) + f * (1.4f + k * 0.6f) + Vector3.up * (1.0f + k * 1.6f);
+            look = hp + Vector3.up * (1.5f + k * 0.3f);
+        }, p.Hero.ultName, null, false, true, 55f, 7f, false);
+    }
+
+    void CinePlayerDeath()
+    {
+        var p = PlayerController.I; if (p == null) return;
+        Vector3 hp = p.transform.position;
+        float a0 = (p.transform.eulerAngles.y + 150f) * Mathf.Deg2Rad;
+        RunCine(2.5f, (float k, out Vector3 pos, out Vector3 look) =>
+        {
+            float a = a0 + k * 0.6f;
+            pos = hp + new Vector3(Mathf.Sin(a), 0, Mathf.Cos(a)) * (3f + k * 4f) + Vector3.up * (1.5f + k * 6f);
+            look = hp + Vector3.up * 0.6f;
+        }, null, null, false, true, 50f, 3f, false);
+        FX.SlowMo(1.5f, 0.3f);
+    }
+
+    void DrawCineOverlay(float w, float h)
+    {
+        float k = Mathf.Clamp01(cineT * 3f) * Mathf.Clamp01((cineDur - cineT) * 3f + (cineDur - cineT > 0.2f ? 1f : 0f));
+        if (cineLetterbox) Letterbox(w, h, Mathf.Clamp01(cineT * 3f));
+        if (!string.IsNullOrEmpty(cineTitle))
+        {
+            float a = Mathf.Clamp01((cineT - 0.6f) * 1.5f) * Mathf.Clamp01((cineDur - cineT) * 1.5f);
+            float y = h * 0.66f;
+            Glow(new Rect(0, y, w, 90), cineTitle, new GUIStyle(big) { fontSize = 66 }, new Color(1f, 0.6f, 0.25f, a), a);
+            if (!string.IsNullOrEmpty(cineSub))
+            {
+                Box(new Rect(w * 0.5f - 220 * a, y + 88, 440 * a, 2), new Color(1f, 0.55f, 0.2f, 0.8f * a));
+                Shadowed(new Rect(0, y + 96, w, 34), cineSub, new GUIStyle(center) { fontSize = 22, fontStyle = FontStyle.Bold }, new Color(1f, 0.92f, 0.8f, a));
+            }
+        }
+        if (cineSkippable) Shadowed(new Rect(w - 360, h - h * 0.11f + 14, 320, 30), "SPACE  skip", new GUIStyle(small) { alignment = TextAnchor.MiddleRight, fontSize = 15 }, new Color(1, 1, 1, 0.5f * k));
+    }
+
+    // ================================================================ Training tutorial
+    struct TutStep { public string title, text; public string[] keys; }
+
+    static readonly TutStep[] TutSteps =
+    {
+        new TutStep { title = "MOVE", text = "Walk around the arena", keys = new[] { "W", "A", "S", "D" } },
+        new TutStep { title = "LOOK", text = "Move the mouse to turn the camera", keys = new[] { "MOUSE" } },
+        new TutStep { title = "SPRINT", text = "Hold SHIFT while moving to sprint", keys = new[] { "SHIFT", "+", "W" } },
+        new TutStep { title = "LIGHT ATTACK", text = "Left-click to strike the training dummy. Keep clicking for a combo (4 hits)", keys = new[] { "LEFT CLICK" } },
+        new TutStep { title = "HEAVY ATTACK", text = "Right-click for a heavy attack. Every weapon has its own (slam / cyclone / skyfall)", keys = new[] { "RIGHT CLICK" } },
+        new TutStep { title = "DODGE ROLL", text = "Press SPACE to roll (twice). Roll right before a hit to trigger slow-motion", keys = new[] { "SPACE" } },
+        new TutStep { title = "BLOCK & PARRY", text = "The dummy now fights back! HOLD F to block its swing. Tap F just as it hits = PARRY", keys = new[] { "HOLD F" } },
+        new TutStep { title = "JAVELIN", text = "Press E to throw your Galeshard javelin, then E again to call it back to your hand", keys = new[] { "E", "E" } },
+        new TutStep { title = "SWITCH WEAPON", text = "Press Q (or 1 / 2 / 3) to swap between greatsword, twin blades and war maul", keys = new[] { "Q", "1", "2", "3" } },
+        new TutStep { title = "EXECUTE", text = "Hit the dummy until its YELLOW stun bar is full, get close, then press V to EXECUTE", keys = new[] { "V", "or", "MIDDLE MOUSE" } },
+        new TutStep { title = "ULTIMATE", text = "Your power bar is full. Press R to unleash your ULTIMATE", keys = new[] { "R" } },
+    };
+
+    void StartTutorial(bool thenStory)
+    {
+        tutorialThenStory = thenStory;
+        phase = Phase.Tutorial;
+        tutStep = -1;
+        tutCompleteT = -1f;
+        Cursor.lockState = CursorLockMode.Locked; Cursor.visible = false;
+        ShowMessage("TRAINING GROUNDS", 2f);
+        NextTutStep();
+    }
+
+    void NextTutStep()
+    {
+        tutStep++;
+        tutDoneT = -1f;
+        var p = PlayerController.I;
+        if (p == null) return;
+        tutMoved = 0f; tutLooked = 0f; tutLastPos = p.transform.position;
+        tutLastYaw = Camera.main != null ? Camera.main.transform.eulerAngles.y : 0f;
+        tutBase = new[] { p.statLight, p.statHeavies, p.statDodges, p.statBlocks, p.statThrows, p.statCatches, p.statSwitches, p.statExecutions, p.statUlts, Mathf.RoundToInt(p.statSprint * 100f) };
+        if (tutStep == 3 && dummy == null) SpawnDummy();
+        if (dummy != null) dummy.dummyAggro = tutStep == 6;
+        if (tutStep == 10) p.rage = p.maxRage;
+        if (tutStep >= TutSteps.Length)
+        {
+            tutCompleteT = 0f;
+            ShowMessage("TRAINING COMPLETE", 2.5f);
+            SFX.Play(SFX.S.Boom, 0.7f, 1.2f);
+        }
+        else SFX.Play(SFX.S.Pickup, 0.5f);
+    }
+
+    void SpawnDummy()
+    {
+        var p = PlayerController.I;
+        var pos = p.transform.position + p.transform.forward * 5f; pos.y = 0f;
+        dummy = Spawn(EnemyType.Grunt, pos);
+        dummy.MakeDummy();
+        dummy.dummyAggro = tutStep == 6;
+    }
+
+    public void OnDummyExecuted(Enemy e) { }
+
+    bool TutCheck(PlayerController p)
+    {
+        switch (tutStep)
+        {
+            case 0: return tutMoved > 8f;
+            case 1: return tutLooked > 140f;
+            case 2: return p.statSprint * 100f - tutBase[9] > 120f;
+            case 3: return p.statLight - tutBase[0] >= 4;
+            case 4: return p.statHeavies - tutBase[1] >= 1;
+            case 5: return p.statDodges - tutBase[2] >= 2;
+            case 6: return p.statBlocks - tutBase[3] >= 1;
+            case 7: return p.statThrows - tutBase[4] >= 1 && p.statCatches - tutBase[5] >= 1;
+            case 8: return p.statSwitches - tutBase[6] >= 2;
+            case 9: return p.statExecutions - tutBase[7] >= 1;
+            case 10: return p.statUlts - tutBase[8] >= 1;
+        }
+        return false;
+    }
+
+    void UpdateTutorial()
+    {
+        var p = PlayerController.I;
+        if (p == null) return;
+        if (dummyRespawn > 0f) { dummyRespawn -= Time.deltaTime; if (dummyRespawn <= 0f && tutCompleteT < 0f) SpawnDummy(); }
+        if (tutCompleteT >= 0f)
+        {
+            tutCompleteT += Time.unscaledDeltaTime;
+            if (tutCompleteT > 3f)
+            {
+                if (dummy != null) Destroy(dummy.gameObject);
+                foreach (var e in Enemy.All.ToArray()) if (e != null) Destroy(e.gameObject);
+                Enemy.All.Clear();
+                if (tutorialThenStory) StartStory(new[] { Story.ChapterIntro(0) }, () => { p.health.Heal(9999f); p.rage = 0f; BeginRun(); });
+                else BackToMenu();
+            }
+            return;
+        }
+        var pos = p.transform.position; pos.y = 0; var lp = tutLastPos; lp.y = 0;
+        tutMoved += Vector3.Distance(pos, lp); tutLastPos = p.transform.position;
+        if (Camera.main != null)
+        {
+            float yaw = Camera.main.transform.eulerAngles.y;
+            tutLooked += Mathf.Abs(Mathf.DeltaAngle(tutLastYaw, yaw)); tutLastYaw = yaw;
+        }
+        if (p.health.Fraction < 0.5f) p.health.Heal(5f);
+        if (tutStep == 10 && p.rage < p.maxRage && !p.UltActive && p.statUlts == tutBase[8]) p.rage = p.maxRage;
+        if (tutDoneT < 0f && TutCheck(p)) { tutDoneT = 0f; SFX.Play(SFX.S.Parry, 0.5f, 1.5f); }
+        if (tutDoneT >= 0f) { tutDoneT += Time.unscaledDeltaTime; if (tutDoneT > 1.1f) NextTutStep(); }
+    }
+
+    void KeyChip(ref float x, float y, string key, Color accent, float alpha = 1f)
+    {
+        var st = new GUIStyle(center) { fontSize = 16, fontStyle = FontStyle.Bold };
+        float kw = Mathf.Max(38f, st.CalcSize(new GUIContent(key)).x + 20f);
+        if (key == "or" || key == "+") { Shadowed(new Rect(x, y, 30, 34), key, st, new Color(1, 1, 1, 0.7f * alpha)); x += 34; return; }
+        Box(new Rect(x, y, kw, 34), new Color(0.05f, 0.04f, 0.04f, 0.85f * alpha));
+        Frame(new Rect(x, y, kw, 34), new Color(accent.r, accent.g, accent.b, alpha), 2);
+        Box(new Rect(x + 2, y + 29, kw - 4, 3), new Color(accent.r, accent.g, accent.b, 0.5f * alpha));
+        Shadowed(new Rect(x, y, kw, 34), key, st, new Color(1, 1, 1, alpha));
+        x += kw + 8;
+    }
+
+    void DrawTutorial(float w, float h)
+    {
+        if (tutStep < 0 || tutStep >= TutSteps.Length)
+        {
+            if (tutCompleteT >= 0f)
+                Shadowed(new Rect(0, h * 0.4f, w, 40), tutorialThenStory ? "Your journey begins..." : "Returning to the main menu...", mid, new Color(1, 1, 1, 0.8f));
+            return;
+        }
+        var st = TutSteps[tutStep];
+        bool done = tutDoneT >= 0f;
+        float pw = 760, ph = 150, px = (w - pw) * 0.5f, py = h - ph - 110;
+        Box(new Rect(px, py, pw, ph), new Color(0.03f, 0.02f, 0.02f, 0.78f));
+        var acc = done ? new Color(0.4f, 1f, 0.45f) : new Color(1f, 0.6f, 0.2f);
+        Frame(new Rect(px, py, pw, ph), new Color(acc.r, acc.g, acc.b, 0.8f), 2);
+        Box(new Rect(px, py, pw * (tutStep + (done ? 1f : 0f)) / TutSteps.Length, 4), acc);
+        Shadowed(new Rect(px + 20, py + 12, 300, 22), $"TRAINING  {tutStep + 1} / {TutSteps.Length}", new GUIStyle(small) { fontSize = 14, fontStyle = FontStyle.Bold }, new Color(1, 1, 1, 0.6f));
+        Shadowed(new Rect(px + 20, py + 30, pw - 40, 40), done ? st.title + "  —  DONE!" : st.title, new GUIStyle(mid) { alignment = TextAnchor.MiddleLeft, fontSize = 30 }, acc);
+        Shadowed(new Rect(px + 20, py + 72, pw - 40, 26), st.text, new GUIStyle(small) { fontSize = 18 }, Color.white);
+        float x = px + 20;
+        foreach (var k in st.keys) KeyChip(ref x, py + 104, k, acc, done ? 0.5f : 1f);
+        if (tutStep == 0) Shadowed(new Rect(px + pw - 240, py + 108, 220, 26), $"{Mathf.Min(100, Mathf.RoundToInt(tutMoved / 8f * 100))}%", new GUIStyle(small) { alignment = TextAnchor.MiddleRight }, acc);
+        Shadowed(new Rect(px, py + ph + 6, pw, 22), "ESC  pause / quit training", new GUIStyle(center) { fontSize = 13 }, new Color(1, 1, 1, 0.45f));
+    }
+
+    // Always-visible control strip at the bottom of the screen.
+    void DrawControlBar(float w, float h)
+    {
+        if (phase != Phase.Fighting && phase != Phase.Countdown) return;
+        var items = new (string key, string label)[] { ("LMB", "Attack"), ("RMB", "Heavy"), ("SPACE", "Dodge"), ("F", "Block/Parry"), ("E", "Javelin"), ("V", "Execute"), ("R", "Ultimate"), ("Q", "Weapon") };
+        var ks = new GUIStyle(center) { fontSize = 13, fontStyle = FontStyle.Bold };
+        var ls = new GUIStyle(small) { fontSize = 13, alignment = TextAnchor.MiddleLeft };
+        float total = 0f;
+        foreach (var it in items) total += Mathf.Max(30f, ks.CalcSize(new GUIContent(it.key)).x + 12f) + ls.CalcSize(new GUIContent(it.label)).x + 22f;
+        float x = (w - total) * 0.5f, y = h - 34;
+        var p = PlayerController.I;
+        foreach (var it in items)
+        {
+            float kw = Mathf.Max(30f, ks.CalcSize(new GUIContent(it.key)).x + 12f);
+            bool hot = (it.key == "V" && p != null && p.ExecutableTarget() != null) || (it.key == "R" && p != null && p.rage >= p.maxRage && !p.UltActive);
+            Color c = hot ? Color.Lerp(new Color(1f, 0.8f, 0.2f), Color.white, Mathf.PingPong(Time.unscaledTime * 4f, 1f)) : new Color(1f, 0.6f, 0.25f, 0.85f);
+            Box(new Rect(x, y, kw, 24), new Color(0, 0, 0, 0.7f));
+            Frame(new Rect(x, y, kw, 24), c, 1);
+            Shadowed(new Rect(x, y, kw, 24), it.key, ks, hot ? c : Color.white);
+            x += kw + 5;
+            float lw = ls.CalcSize(new GUIContent(it.label)).x;
+            Shadowed(new Rect(x, y, lw + 4, 24), it.label, ls, new Color(1, 1, 1, hot ? 1f : 0.7f));
+            x += lw + 17;
+        }
+    }
+
+    // Floating health + stun bars over enemies, and the EXECUTE prompt.
+    void DrawEnemyBars(float w, float h)
+    {
+        var cam = Camera.main; var p = PlayerController.I;
+        if (cam == null || p == null) return;
+        float ui = Screen.height / h;
+        var exec = p.ExecutableTarget();
+        foreach (var e in Enemy.All)
+        {
+            if (e == null || e.health.IsDead) continue;
+            var sp = cam.WorldToScreenPoint(e.transform.position + Vector3.up * (2.45f * e.Scale + 0.2f));
+            if (sp.z < 0.5f || sp.z > 40f) continue;
+            float x = sp.x / ui, y = (Screen.height - sp.y) / ui;
+            if (e.IsStunned)
+            {
+                bool can = e == exec;
+                float pulse = 0.6f + 0.4f * Mathf.Sin(Time.unscaledTime * 8f);
+                var col = can ? new Color(1f, 0.85f, 0.2f, 1f) : new Color(1f, 0.85f, 0.2f, 0.6f);
+                Tex(new Rect(x - 20 * pulse, y - 46 - 20 * pulse, 40 * pulse, 40 * pulse), ring, col);
+                Glow(new Rect(x - 120, y - 40, 240, 30), can ? "[V]  EXECUTE" : "STUNNED", new GUIStyle(mid) { fontSize = can ? 22 : 16 }, col, can ? pulse : 0.3f);
+            }
+            if (e.type == EnemyType.Boss) continue; // boss has the big bar at the top
+            bool show = e.health.Fraction < 0.999f || e.StunFraction > 0.01f || e.trainingDummy;
+            if (!show) continue;
+            float bw = 70f;
+            Box(new Rect(x - bw * 0.5f - 2, y - 2, bw + 4, 13), new Color(0, 0, 0, 0.7f));
+            Box(new Rect(x - bw * 0.5f, y, bw * e.health.Fraction, 5), new Color(0.9f, 0.15f, 0.1f));
+            Box(new Rect(x - bw * 0.5f, y + 6, bw * e.StunFraction, 3), e.IsStunned ? Color.Lerp(new Color(1f, 0.8f, 0.2f), Color.white, Mathf.PingPong(Time.unscaledTime * 5f, 1f)) : new Color(1f, 0.8f, 0.2f));
+            if (e.trainingDummy) Shadowed(new Rect(x - 80, y - 22, 160, 20), "TRAINING DUMMY", new GUIStyle(center) { fontSize = 12 }, new Color(1, 1, 1, 0.7f));
+        }
+        // boss stun bar under the big health bar
+        if (boss != null && !boss.health.IsDead)
+        {
+            float bw = Mathf.Min(760f, w * 0.6f);
+            Box(new Rect((w - bw) * 0.5f, 80, bw * boss.StunFraction, 5), new Color(1f, 0.8f, 0.2f, 0.9f));
+        }
     }
 
     // ================================================================ GUI helpers
@@ -734,9 +1138,9 @@ public class GameManager : MonoBehaviour
             case Phase.Story: DrawStory(w, h); return;
         }
 
-        DrawHUD(w, h, baseM);
+        if (!cineActive) DrawHUD(w, h, baseM);
 
-        if (phase == Phase.GameOver || (phase == Phase.Victory && !storyMode))
+        if ((phase == Phase.GameOver && deathT >= 2.5f) || (phase == Phase.Victory && !storyMode))
         {
             Box(new Rect(0, 0, w, h), new Color(0, 0, 0, 0.6f));
             Letterbox(w, h, 1f);
@@ -756,6 +1160,7 @@ public class GameManager : MonoBehaviour
             Letterbox(w, h, k);
         }
 
+        if (cineActive) DrawCineOverlay(w, h);
         if (paused) DrawPause(w, h);
     }
 
@@ -1015,7 +1420,7 @@ public class GameManager : MonoBehaviour
             Shadowed(new Rect(x, y + 56, 400, 26), p.SpearInHand ? "Galeshard Javelin: ready  [E] throw" : "Galeshard Javelin: thrown  [E] recall", small, new Color(0.5f, 0.85f, 1f));
             if (p.Chilled) Shadowed(new Rect(x, y + 80, 300, 26), "<b>CHILLED</b> — slowed", small, new Color(0.6f, 0.9f, 1f));
 
-            float sw = 172, sx = w - 3 * (sw + 8) - 22, sy = h - 74;
+            float sw = 172, sx = w - 3 * (sw + 8) - 22, sy = h - 112;
             for (int i = 0; i < 3; i++)
             {
                 var r = new Rect(sx + i * (sw + 8), sy, sw, 50);
@@ -1065,8 +1470,14 @@ public class GameManager : MonoBehaviour
             Shadowed(new Rect(0, h * 0.62f, w, 40), weaponMsg, mid, new Color(wc.r, wc.g, wc.b, Mathf.Clamp01(weaponMsgTimer * 2f)));
         }
 
-        if (helpTimer > 0f && !paused) DrawHelp(30, 290, true);
-        else if (!paused) Shadowed(new Rect(30, 262, 400, 24), "[H] controls    [ESC] pause", small, new Color(1, 1, 1, 0.5f));
+        if (!cineActive && phase != Phase.GameOver)
+        {
+            DrawEnemyBars(w, h);
+            if (helpTimer > 0f && !paused) DrawHelp(30, 300, true);
+            else if (!paused) Shadowed(new Rect(30, 272, 400, 24), "[H] full controls    [ESC] pause", small, new Color(1, 1, 1, 0.5f));
+            if (phase == Phase.Tutorial) DrawTutorial(w, h);
+            else DrawControlBar(w, h);
+        }
     }
 
     // GTA-style radar: rotates with the camera, enemies as red blips (clamped to the rim when far).
@@ -1134,7 +1545,8 @@ public class GameManager : MonoBehaviour
 
         Tex(new Rect(x - 2, y - 2, size + 4, size + 4), ring, new Color(tint.r, tint.g, tint.b, 0.9f));
         Shadowed(new Rect(x - 20, y + size + 4, size + 40, 22), Map.name, new GUIStyle(center) { fontSize = 13, fontStyle = FontStyle.Bold }, tint);
-        string obj = phase == Phase.Fighting || phase == Phase.Countdown
+        string obj = phase == Phase.Tutorial ? "OBJECTIVE: Complete your training"
+            : phase == Phase.Fighting || phase == Phase.Countdown
             ? (waveIndex >= Waves.Length - 1 ? "OBJECTIVE: Slay " + BossDefs.Names[Map.bossKind].Split(',')[0] : $"OBJECTIVE: Survive wave {Mathf.Max(1, waveIndex + 1)} of {Waves.Length}")
             : "";
         Shadowed(new Rect(x - 20, y + size + 22, 360, 22), obj, new GUIStyle(small) { fontSize = 13 }, new Color(1, 1, 1, 0.8f));

@@ -1,7 +1,10 @@
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEditor.Animations;
+using UnityEngine.Rendering.PostProcessing;
 
 // Builds the game scene from code: materials, player, camera, managers.
 // The realms themselves are built at runtime by MapBuilder so the player can pick one.
@@ -41,6 +44,7 @@ public static class SceneBuilder
         a.stormStone = Mat("StormStone", new Color(0.2f, 0.19f, 0.25f), 0f, 0.3f);
         a.stormRune = Mat("StormRune", new Color(0.35f, 0.28f, 0.7f), 0f, 0.5f, new Color(0.45f, 0.32f, 1.4f));
         a.cloud = Mat("Cloud", new Color(0.32f, 0.3f, 0.42f), 0f, 0f);
+        a.sky = SkyMat();
 
         // Heroes
         a.heroSkin = Mat("HeroSkin", new Color(0.62f, 0.45f, 0.36f), 0f, 0.35f);
@@ -97,6 +101,7 @@ public static class SceneBuilder
         a.healOrb = Mat("HealOrb", new Color(0.3f, 1f, 0.4f), 0f, 0.8f, new Color(0.6f, 3f, 0.8f));
         a.rageAura = Mat("RageAura", new Color(1f, 0.3f, 0.05f), 0f, 0.5f, new Color(4f, 0.8f, 0.05f));
 
+        SetupHeroModels(a);
         gm.AddComponent<GameManager>();
 
         // ---------------- Player
@@ -117,6 +122,8 @@ public static class SceneBuilder
         cam.nearClipPlane = 0.1f;
         cam.farClipPlane = 260f;
         camGo.AddComponent<AudioListener>();
+        cam.allowHDR = true;
+        SetupPostFX(camGo);
         var tpc = camGo.AddComponent<ThirdPersonCamera>();
         tpc.target = player.transform;
         camGo.transform.position = new Vector3(0, 3, -11);
@@ -132,6 +139,9 @@ public static class SceneBuilder
         PlayerSettings.resizableWindow = true;
         PlayerSettings.runInBackground = true;
         QualitySettings.shadowDistance = 70f;
+        QualitySettings.shadowResolution = ShadowResolution.VeryHigh;
+        QualitySettings.shadowCascades = 4;
+        QualitySettings.antiAliasing = 0; // SMAA in the post stack instead
 
         AssetDatabase.SaveAssets();
         Debug.Log("[BladeOfAsh] Scene built: " + ScenePath);
@@ -171,6 +181,174 @@ public static class SceneBuilder
         Debug.Log("[BladeOfAsh] Windows build result: " + report.summary.result + " size=" + report.summary.totalSize);
         if (Application.isBatchMode && report.summary.result != UnityEditor.Build.Reporting.BuildResult.Succeeded)
             EditorApplication.Exit(1);
+    }
+
+    // ---------------- Film look: bloom, ACES tonemapping, grading, AO, vignette, grain
+    static void SetupPostFX(GameObject camGo)
+    {
+        var res = AssetDatabase.LoadAssetAtPath<PostProcessResources>("Packages/com.unity.postprocessing/PostProcessing/PostProcessResources.asset");
+        if (res == null) { Debug.LogWarning("[BladeOfAsh] PostProcessResources not found - skipping post FX"); return; }
+        var layer = camGo.AddComponent<PostProcessLayer>();
+        layer.Init(res);
+        layer.volumeTrigger = camGo.transform;
+        layer.volumeLayer = ~0;
+        layer.antialiasingMode = PostProcessLayer.Antialiasing.SubpixelMorphologicalAntialiasing;
+
+        if (!AssetDatabase.IsValidFolder("Assets/Settings")) AssetDatabase.CreateFolder("Assets", "Settings");
+        const string path = "Assets/Settings/PostFX.asset";
+        AssetDatabase.DeleteAsset(path);
+        var profile = ScriptableObject.CreateInstance<PostProcessProfile>();
+        AssetDatabase.CreateAsset(profile, path);
+
+        var bloom = Add<Bloom>(profile);
+        bloom.intensity.Override(3.2f); bloom.threshold.Override(1.05f); bloom.softKnee.Override(0.55f); bloom.diffusion.Override(8f);
+        var cg = Add<ColorGrading>(profile);
+        cg.gradingMode.Override(GradingMode.HighDefinitionRange);
+        cg.tonemapper.Override(Tonemapper.ACES);
+        cg.postExposure.Override(0.45f);
+        cg.contrast.Override(16f);
+        cg.saturation.Override(-6f);
+        cg.temperature.Override(6f);
+        cg.gamma.Override(new Vector4(1f, 1f, 1f, -0.05f));
+        var ao = Add<AmbientOcclusion>(profile);
+        ao.mode.Override(AmbientOcclusionMode.MultiScaleVolumetricObscurance);
+        ao.intensity.Override(0.9f); ao.thicknessModifier.Override(1.4f);
+        var vig = Add<Vignette>(profile);
+        vig.intensity.Override(0.36f); vig.smoothness.Override(0.45f); vig.roundness.Override(0.9f);
+        var grain = Add<Grain>(profile);
+        grain.intensity.Override(0.16f); grain.size.Override(0.7f); grain.colored.Override(false);
+        var ca = Add<ChromaticAberration>(profile);
+        ca.intensity.Override(0.06f);
+        AssetDatabase.SaveAssets();
+
+        var volGo = new GameObject("PostFX Volume");
+        var vol = volGo.AddComponent<PostProcessVolume>();
+        vol.isGlobal = true;
+        vol.priority = 1f;
+        vol.sharedProfile = profile;
+    }
+
+    static T Add<T>(PostProcessProfile profile) where T : PostProcessEffectSettings
+    {
+        var s = profile.AddSettings<T>();
+        s.enabled.Override(true);
+        s.name = typeof(T).Name;
+        s.hideFlags = HideFlags.HideInInspector | HideFlags.HideInHierarchy;
+        AssetDatabase.AddObjectToAsset(s, profile);
+        return s;
+    }
+
+    // ---------------- Optional realistic heroes (Mixamo etc.)
+    // Assets/Models/Kael|Ysra|Gorrun/Character.fbx + Idle.fbx, Run.fbx, Attack1.fbx ... (see README in that folder)
+    static readonly string[] OneShots = { "Attack1", "Attack2", "Attack3", "Heavy", "Spin", "Dodge", "Hit", "Death", "Throw", "Ult", "Execute" };
+
+    static void SetupHeroModels(GameAssets a)
+    {
+        string[] names = { "Kael", "Ysra", "Gorrun" };
+        a.heroModels = new GameObject[3];
+        a.heroControllers = new RuntimeAnimatorController[3];
+        for (int i = 0; i < 3; i++)
+        {
+            string dir = "Assets/Models/" + names[i];
+            if (File.Exists(dir + "/Character.fbx")) PrepareCharacterMaterials(dir);
+            var model = AssetDatabase.LoadAssetAtPath<GameObject>(dir + "/Character.fbx");
+            var idle = Clip(dir, "Idle");
+            var run = Clip(dir, "Run");
+            if (model == null || idle == null) continue;
+
+            string cpath = dir + "/" + names[i] + ".controller";
+            AssetDatabase.DeleteAsset(cpath);
+            var ctrl = AnimatorController.CreateAnimatorControllerAtPath(cpath);
+            ctrl.AddParameter("Speed", AnimatorControllerParameterType.Float);
+            var sm = ctrl.layers[0].stateMachine;
+
+            var loco = ctrl.CreateBlendTreeInController("Locomotion", out var tree, 0);
+            tree.blendParameter = "Speed";
+            tree.AddChild(idle, 0f);
+            if (run != null) tree.AddChild(run, 0.55f);
+            var sprint = Clip(dir, "Sprint");
+            tree.AddChild(sprint != null ? sprint : (run != null ? run : idle), 1f);
+            sm.defaultState = loco;
+
+            var block = Clip(dir, "Block");
+            if (block != null) { var st = sm.AddState("Block"); st.motion = block; }
+
+            foreach (var n in OneShots)
+            {
+                var c = Clip(dir, n);
+                if (c == null) continue;
+                var st = sm.AddState(n);
+                st.motion = c;
+                st.speed = n.StartsWith("Attack") ? 1.35f : n == "Dodge" ? 1.4f : 1.1f;
+                if (n == "Death") continue;
+                var tr = st.AddTransition(loco);
+                tr.hasExitTime = true; tr.exitTime = 0.85f; tr.duration = 0.15f;
+            }
+            a.heroModels[i] = model;
+            a.heroControllers[i] = ctrl;
+            Debug.Log($"[BladeOfAsh] Hero model wired: {names[i]}");
+        }
+    }
+
+    // Mixamo FBX: pull the embedded textures + materials out so they can be fixed (otherwise the
+    // character can render white/flat), mark normal maps, and tame over-shiny "plastic" smoothness.
+    static void PrepareCharacterMaterials(string dir)
+    {
+        string fbx = dir + "/Character.fbx";
+        var mi = AssetImporter.GetAtPath(fbx) as ModelImporter;
+        if (mi == null) return;
+        string texDir = dir + "/Textures", matDir = dir + "/Materials";
+        if (!AssetDatabase.IsValidFolder(texDir))
+        {
+            AssetDatabase.CreateFolder(dir, "Textures");
+            mi.ExtractTextures(texDir);
+            AssetDatabase.Refresh();
+        }
+        foreach (var guid in AssetDatabase.FindAssets("t:Texture2D", new[] { texDir }))
+        {
+            var tp = AssetDatabase.GUIDToAssetPath(guid);
+            var ti = AssetImporter.GetAtPath(tp) as TextureImporter;
+            if (ti == null) continue;
+            string n = Path.GetFileNameWithoutExtension(tp).ToLower();
+            bool normal = n.Contains("normal") || n.EndsWith("_n") || n.Contains("nrm");
+            if (normal && ti.textureType != TextureImporterType.NormalMap) { ti.textureType = TextureImporterType.NormalMap; ti.SaveAndReimport(); }
+        }
+        if (!AssetDatabase.IsValidFolder(matDir))
+        {
+            AssetDatabase.CreateFolder(dir, "Materials");
+            foreach (var m in AssetDatabase.LoadAllAssetsAtPath(fbx).OfType<Material>().ToArray())
+                AssetDatabase.ExtractAsset(m, $"{matDir}/{m.name}.mat");
+            AssetDatabase.WriteImportSettingsIfDirty(fbx);
+            AssetDatabase.ImportAsset(fbx, ImportAssetOptions.ForceUpdate);
+        }
+        var std = Shader.Find("Standard");
+        foreach (var guid in AssetDatabase.FindAssets("t:Material", new[] { matDir }))
+        {
+            var m = AssetDatabase.LoadAssetAtPath<Material>(AssetDatabase.GUIDToAssetPath(guid));
+            if (m == null) continue;
+            if (m.shader == null || m.shader.name.Contains("Unlit") || m.shader.name.Contains("Legacy")) m.shader = std;
+            if (m.HasProperty("_Glossiness")) m.SetFloat("_Glossiness", Mathf.Clamp(m.GetFloat("_Glossiness"), 0.2f, 0.4f));
+            if (m.HasProperty("_BumpMap") && m.GetTexture("_BumpMap") != null) m.EnableKeyword("_NORMALMAP");
+            EditorUtility.SetDirty(m);
+        }
+        AssetDatabase.SaveAssets();
+    }
+
+    static Material SkyMat()
+    {
+        string path = $"{MatDir}/Sky.mat";
+        var m = AssetDatabase.LoadAssetAtPath<Material>(path);
+        if (m == null) { m = new Material(Shader.Find("Skybox/Procedural")); AssetDatabase.CreateAsset(m, path); }
+        return m;
+    }
+
+    static AnimationClip Clip(string dir, string name)
+    {
+        var path = $"{dir}/{name}.fbx";
+        if (!File.Exists(path)) return null;
+        foreach (var o in AssetDatabase.LoadAllAssetsAtPath(path))
+            if (o is AnimationClip c && !c.name.StartsWith("__preview__")) return c;
+        return null;
     }
 
     // ---------------- helpers

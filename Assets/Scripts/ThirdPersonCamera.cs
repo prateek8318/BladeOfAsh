@@ -15,6 +15,13 @@ public class ThirdPersonCamera : MonoBehaviour
     Vector3 shakeOffset;
 
     Light keyLight;
+    Camera camComp;
+
+    // Cinematic override: GameManager drives these during cutscenes.
+    public static bool cineActive, cineCut;
+    public static Vector3 cinePos, cineLook;
+    public static float cineFov = 50f, cineSmooth = 6f;
+    bool wasCine;
 
     void Start()
     {
@@ -31,6 +38,29 @@ public class ThirdPersonCamera : MonoBehaviour
     void LateUpdate()
     {
         if (target == null) return;
+        if (camComp == null) camComp = GetComponent<Camera>();
+        if (cineActive)
+        {
+            float dt = Time.unscaledDeltaTime;
+            if (cineCut) { transform.position = cinePos; cineCut = false; }
+            else transform.position = Vector3.Lerp(transform.position, cinePos, 1f - Mathf.Exp(-cineSmooth * dt));
+            var want = Quaternion.LookRotation((cineLook - transform.position).normalized);
+            transform.rotation = Quaternion.Slerp(transform.rotation, want, 1f - Mathf.Exp(-cineSmooth * 1.4f * dt));
+            transform.position += Random.insideUnitSphere * FX.shake * 0.25f;
+            if (camComp != null) camComp.fieldOfView = Mathf.Lerp(camComp.fieldOfView, cineFov, 1f - Mathf.Exp(-4f * dt));
+            if (keyLight != null) keyLight.intensity = 1.6f;
+            wasCine = true;
+            return;
+        }
+        if (wasCine)
+        {
+            // hand control back smoothly from wherever the cutscene left the camera
+            wasCine = false;
+            var e = transform.eulerAngles;
+            yaw = e.y; pitch = Mathf.Clamp(e.x > 180f ? e.x - 360f : e.x, minPitch, maxPitch);
+            currentDistance = Vector3.Distance(transform.position, target.position + Vector3.up * height);
+        }
+        if (camComp != null) camComp.fieldOfView = Mathf.Lerp(camComp.fieldOfView, 60f, 1f - Mathf.Exp(-4f * Time.unscaledDeltaTime));
 
         var gm = GameManager.I;
         if (gm != null && gm.IsTitle)

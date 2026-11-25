@@ -15,7 +15,7 @@ public class Enemy : MonoBehaviour
     public Health health { get; private set; }
     public bool Phase2 => phase2;
 
-    enum State { Spawning, Chase, Windup, Charging, Recover, Stagger, Dead }
+    enum State { Spawning, Chase, Windup, Charging, Recover, Stagger, Stunned, Executed, Dead }
     enum Attack { Swipe, Slam, Charge, Bolt, Volley, Nova, SpikeLine, Storm }
 
     State state;
@@ -46,6 +46,16 @@ public class Enemy : MonoBehaviour
     bool chargeHit;
 
     Quaternion armRT, armLT, torsoT, handRT;
+
+    // ---- Stun meter (fill it with hits, then EXECUTE the enemy) + training dummy
+    public float stun, stunMax = 40f;
+    float stunDecayDelay;
+    public bool IsStunned => state == State.Stunned;
+    public float StunFraction => state == State.Stunned ? 1f : Mathf.Clamp01(stun / stunMax);
+    public float Scale => scale;
+    public bool trainingDummy;   // does not move or attack unless dummyAggro
+    public bool dummyAggro;
+    public bool dummyImmortal = true;
 
     bool IsLight => type == EnemyType.Grunt || type == EnemyType.Caster || type == EnemyType.Stalker;
 
@@ -128,6 +138,8 @@ public class Enemy : MonoBehaviour
             case EnemyType.Boss: BuildBoss(A); break;
         }
 
+        stunMax = t == EnemyType.Boss ? 320f : t == EnemyType.Brute ? 110f : 45f;
+
         cc.height = 2f * scale;
         cc.radius = 0.45f * scale;
         cc.center = new Vector3(0, scale, 0);
@@ -208,9 +220,12 @@ public class Enemy : MonoBehaviour
         flash = Mathf.MoveTowards(flash, 0f, dt * 6f);
         attackCooldownTimer -= dt * timeMul;
         stateTimer -= dt * timeMul;
+        stunDecayDelay -= dt;
+        if (stunDecayDelay <= 0f && state != State.Stunned) stun = Mathf.Max(0f, stun - dt * stunMax * 0.12f);
 
         var p = Player;
         bool playerAlive = p != null && !p.health.IsDead && (GameManager.I == null || GameManager.I.InputEnabled);
+        if (trainingDummy && !dummyAggro) playerAlive = false;
         Vector3 toPlayer = playerAlive ? p.transform.position - transform.position : transform.forward * 100f;
         toPlayer.y = 0;
         float dist = toPlayer.magnitude;
@@ -268,6 +283,16 @@ public class Enemy : MonoBehaviour
 
             case State.Recover:
                 if (stateTimer <= 0f) { state = State.Chase; attackCooldownTimer = cooldown * (phase2 ? 0.7f : 1f) * Random.Range(0.8f, 1.3f); SetIdle(); }
+                break;
+
+            case State.Stunned:
+                // dazed: slumped, swaying, open for an execution
+                SetPose(new Vector3(55, 0, 25), new Vector3(55, 0, -25), new Vector3(30 + Mathf.Sin(Time.time * 3f) * 8f, Mathf.Sin(Time.time * 2f) * 15f, 0), new Vector3(10, 0, 0));
+                if (Random.value < dt * 6f) FX.Shards(transform.position + Vector3.up * scale * 2.3f, GameAssets.I.shockwave, 1, 1.2f, 0.06f);
+                if (stateTimer <= 0f) { state = State.Chase; stun = 0f; SetIdle(); staggerImmune = 1f; }
+                break;
+
+            case State.Executed:
                 break;
 
             case State.Stagger:
@@ -514,7 +539,7 @@ public class Enemy : MonoBehaviour
 
     public void Stagger(float seconds, bool force)
     {
-        if (state == State.Dead || state == State.Spawning) return;
+        if (state == State.Dead || state == State.Spawning || state == State.Stunned || state == State.Executed) return;
         if (!force && !IsLight && poise < poiseMax) return;
         poise = 0f;
         state = State.Stagger;
@@ -529,6 +554,22 @@ public class Enemy : MonoBehaviour
         FX.Shards(transform.position + Vector3.up * scale * 1.2f, GameAssets.I.shard, 4, 4f, 0.07f);
 
         poise += info.amount * (info.heavy ? 1.6f : 1f);
+        if (info.fromPlayer && state != State.Stunned && state != State.Executed && state != State.Spawning)
+        {
+            stun += info.amount * (info.heavy ? 1.6f : 1f);
+            stunDecayDelay = 2.5f;
+            if (stun >= stunMax && !health.IsDead)
+            {
+                stun = stunMax;
+                state = State.Stunned;
+                stateTimer = type == EnemyType.Boss ? 3.5f : 4.5f;
+                FX.Ring(transform.position, GameAssets.I.shockwave, 2f * scale, 0.4f);
+                SFX.Play(SFX.S.Parry, 0.6f, 0.6f);
+                GameManager.I?.ShowMessage("STUNNED!  [V] EXECUTE", 1.2f);
+                return;
+            }
+        }
+        if (state == State.Stunned || state == State.Executed) return;
         if (IsLight) { if (info.heavy || staggerImmune <= 0f) Stagger(info.heavy ? 0.6f : 0.3f, true); }
         else if (poise >= poiseMax) Stagger(type == EnemyType.Boss ? 1.3f : 0.8f, true);
 
@@ -547,6 +588,39 @@ public class Enemy : MonoBehaviour
                 GameManager.I?.SpawnAdds(bossKind == 1 ? EnemyType.Stalker : bossKind == 2 ? EnemyType.Caster : EnemyType.Grunt, 3);
             }
         }
+    }
+
+    // Execution finisher. Returns true if it killed the enemy (bosses just take a huge chunk).
+    public void MakeDummy()
+    {
+        trainingDummy = true;
+        health.SetMax(400f);
+        damage = 4f; windup = 0.9f; cooldown = 2.2f; speed = 2.5f;
+        stunMax = 70f;
+    }
+
+    public bool BeginExecuted()
+    {
+        if (state != State.Stunned) return false;
+        state = State.Executed;
+        stun = 0f;
+        knock = Vector3.zero;
+        SetPose(new Vector3(-30, 0, 70), new Vector3(-30, 0, -70), new Vector3(-35, 0, 0), new Vector3(0, 0, 0));
+        return true;
+    }
+
+    public void EndExecuted(float damage, Vector3 from)
+    {
+        if (state == State.Dead) return;
+        if (trainingDummy) { GameManager.I?.OnDummyExecuted(this); }
+        if (state == State.Executed) state = State.Stagger;
+        stateTimer = 1.2f;
+        health.TakeDamage(new DamageInfo { amount = damage, source = from, knockback = 14f, heavy = true, fromPlayer = true });
+    }
+
+    void LateUpdate()
+    {
+        if (trainingDummy && dummyImmortal && health != null && health.current < health.maxHealth * 0.3f) health.Heal(health.maxHealth);
     }
 
     void OnDied()

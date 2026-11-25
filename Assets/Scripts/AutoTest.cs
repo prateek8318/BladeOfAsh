@@ -52,6 +52,7 @@ public class AutoTest : MonoBehaviour
                     int kind = best > 7f ? 2 : (UnityEngine.Random.value < 0.15f ? 1 : 0);
                     if (UnityEngine.Random.value < 0.03f) kind = 4; // switch weapon now and then
                     if (p.rage >= p.maxRage) kind = 3;
+                    if (p.ExecutableTarget() != null) kind = 5;
                     p.AutoAction(kind);
                     nextAction = Time.time + 0.3f;
                 }

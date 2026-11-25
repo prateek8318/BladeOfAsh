@@ -46,6 +46,19 @@ public static class MapBuilder
         RenderSettings.fogColor = fog;
         var cam = Camera.main;
         if (cam != null) { cam.clearFlags = CameraClearFlags.SolidColor; cam.backgroundColor = fog; }
+        var A = GameAssets.I;
+        if (A != null && A.sky != null && cam != null)
+        {
+            // procedural sky with a real sun disc, tinted to blend into the realm's fog at the horizon
+            var m = new Material(A.sky);
+            m.SetColor("_SkyTint", Color.Lerp(fog, sky, 0.5f));
+            m.SetColor("_GroundColor", fog);
+            m.SetFloat("_AtmosphereThickness", 0.75f);
+            m.SetFloat("_Exposure", 0.55f);
+            m.SetFloat("_SunSize", 0.035f);
+            RenderSettings.skybox = m;
+            cam.clearFlags = CameraClearFlags.Skybox;
+        }
 
         var sunGo = new GameObject("Sun");
         sunGo.transform.SetParent(root, false);
@@ -54,7 +67,9 @@ public static class MapBuilder
         sun.color = sunColor;
         sun.intensity = sunIntensity;
         sun.shadows = LightShadows.Soft;
-        sun.shadowStrength = 0.8f;
+        sun.shadowStrength = 0.85f;
+        sun.shadowResolution = UnityEngine.Rendering.LightShadowResolution.VeryHigh;
+        sun.shadowBias = 0.03f; sun.shadowNormalBias = 0.3f;
         sunGo.transform.rotation = Quaternion.Euler(sunEuler);
         RenderSettings.sun = sun;
     }
